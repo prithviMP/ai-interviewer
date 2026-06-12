@@ -1,116 +1,138 @@
-import React, { useState, useEffect } from "react";
-import { 
-  Brain, 
-  Play, 
-  Send, 
-  RefreshCw, 
-  Award, 
-  AlertCircle, 
+import React, { useState, useEffect, useCallback } from "react";
+import {
+  Play,
+  Send,
+  RefreshCw,
+  Award,
+  AlertCircle,
   ChevronRight,
   BookOpen,
   HelpCircle,
-  MessageSquare
+  CheckCircle2,
+  Circle,
+  TrendingUp,
+  FileText,
 } from "lucide-react";
-import { GridBackground } from "./components/ui/GridBackground";
-import { HoverBorderGradient } from "./components/ui/HoverBorderGradient";
+import { AuthForm } from "./components/AuthForm";
+import { DashboardLayout } from "./components/DashboardLayout";
 import { GlowingCard } from "./components/ui/GlowingCard";
+import { HoverBorderGradient } from "./components/ui/HoverBorderGradient";
 import { MultiStepLoader } from "./components/ui/MultiStepLoader";
-
-const API_BASE = "http://127.0.0.1:8000";
+import { apiFetch, clearAuth, getUser } from "./lib/auth";
 
 const SUBJECTS_TOPICS = {
-  Frontend: ["React", "JavaScript", "CSS"],
-  Backend: ["Node.js", "Databases"]
+  Frontend: ["React Hooks", "JavaScript", "CSS", "TypeScript"],
+  Backend: ["Node.js", "Databases", "API Design", "Authentication"],
+  DevOps: ["Docker", "CI/CD", "Kubernetes"],
+  Data: ["SQL", "Data Modeling", "ETL"],
 };
 
 export default function App() {
-  const [screen, setScreen] = useState("setup"); // "setup" | "interview" | "results"
-  
-  // Setup state
-  const [subject, setSubject] = useState("Frontend");
-  const [topic, setTopic] = useState("React");
+  const [user, setUser] = useState(getUser);
+  const [view, setView] = useState("home");
+
+  const [skillCategory, setSkillCategory] = useState("Frontend");
+  const [topic, setTopic] = useState("React Hooks");
   const [difficulty, setDifficulty] = useState("Medium");
-  
-  // Active session state
+  const [experienceLevel, setExperienceLevel] = useState("Mid");
+  const [assessmentType, setAssessmentType] = useState("Knowledge Check");
+  const [learningObjectives, setLearningObjectives] = useState("");
+
   const [sessionId, setSessionId] = useState("");
-  const [currentQuestion, setCurrentQuestion] = useState("");
-  const [questionNumber, setQuestionNumber] = useState(1);
-  const [totalQuestions, setTotalQuestions] = useState(5);
-  const [answerText, setAnswerText] = useState("");
+  const [questions, setQuestions] = useState([]);
+  const [questionIndex, setQuestionIndex] = useState(0);
+  const [selectedAnswer, setSelectedAnswer] = useState("");
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
-  
-  // Results state
   const [results, setResults] = useState(null);
+  const [feedback, setFeedback] = useState(null);
+  const [questionStartTime, setQuestionStartTime] = useState(Date.now());
 
-  // Sync topic when subject changes
+  const [history, setHistory] = useState([]);
+  const [reports, setReports] = useState(null);
+  const [selectedHistory, setSelectedHistory] = useState(null);
+
   useEffect(() => {
-    const topics = SUBJECTS_TOPICS[subject];
-    if (topics && !topics.includes(topic)) {
-      setTopic(topics[0]);
-    }
-  }, [subject]);
+    const topics = SUBJECTS_TOPICS[skillCategory];
+    if (topics && !topics.includes(topic)) setTopic(topics[0]);
+  }, [skillCategory]);
 
-  const handleStartInterview = async () => {
+  const loadReports = useCallback(async () => {
+    try {
+      const data = await apiFetch("/reports");
+      setReports(data);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const data = await apiFetch("/history");
+      setHistory(data);
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  useEffect(() => {
+    if (user && view === "home") loadReports();
+    if (user && view === "history") loadHistory();
+    if (user && view === "reports") loadReports();
+  }, [user, view, loadReports, loadHistory]);
+
+  const buildConfig = () => ({
+    skill_category: skillCategory,
+    topic,
+    difficulty,
+    experience_level: experienceLevel,
+    assessment_type: assessmentType,
+    learning_objectives: learningObjectives,
+  });
+
+  const handleStartAssessment = async () => {
     setErrorMsg("");
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/start-interview`, {
+      const data = await apiFetch("/assessments/generate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ subject, topic, difficulty })
+        body: JSON.stringify(buildConfig()),
       });
-      
-      if (!response.ok) {
-        throw new Error("Failed to start session. Make sure the backend server is running.");
-      }
-      
-      const data = await response.json();
       setSessionId(data.session_id);
-      setCurrentQuestion(data.question);
-      setQuestionNumber(data.question_number);
-      setTotalQuestions(data.total_questions);
-      setAnswerText("");
-      setScreen("interview");
+      setQuestions(data.questions);
+      setQuestionIndex(0);
+      setSelectedAnswer("");
+      setQuestionStartTime(Date.now());
+      setView("assessment");
     } catch (err) {
-      setErrorMsg(err.message || "An error occurred.");
+      setErrorMsg(err.message || "Failed to generate assessment.");
     } finally {
       setLoading(false);
     }
   };
 
   const handleSubmitAnswer = async () => {
-    if (!answerText.trim()) {
-      setErrorMsg("Answer cannot be empty.");
+    if (!selectedAnswer.trim()) {
+      setErrorMsg("Please select an answer.");
       return;
     }
-    
     setErrorMsg("");
     setLoading(true);
+    const timeMs = Date.now() - questionStartTime;
     try {
-      const response = await fetch(`${API_BASE}/submit-answer`, {
+      const data = await apiFetch(`/assessments/${sessionId}/answer`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, answer: answerText })
+        body: JSON.stringify({ selected_answer: selectedAnswer, time_ms: timeMs }),
       });
-      
-      if (!response.ok) {
-        throw new Error("Failed to submit answer. Please try again.");
-      }
-      
-      const data = await response.json();
-      
       if (data.done) {
-        // Retrieve final results
         await fetchResults();
       } else {
-        setCurrentQuestion(data.next_question);
-        setQuestionNumber(data.question_number);
-        setTotalQuestions(data.total_questions);
-        setAnswerText("");
+        setQuestionIndex((i) => i + 1);
+        setSelectedAnswer("");
+        setQuestionStartTime(Date.now());
       }
     } catch (err) {
-      setErrorMsg(err.message || "An error occurred.");
+      setErrorMsg(err.message || "Failed to submit answer.");
     } finally {
       setLoading(false);
     }
@@ -118,330 +140,318 @@ export default function App() {
 
   const fetchResults = async () => {
     try {
-      const response = await fetch(`${API_BASE}/results/${sessionId}`);
-      if (!response.ok) {
-        throw new Error("Failed to retrieve interview results.");
-      }
-      const data = await response.json();
-      setResults(data);
-      setScreen("results");
+      const [resultsData, feedbackData] = await Promise.all([
+        apiFetch(`/assessments/${sessionId}/results`),
+        apiFetch(`/assessments/${sessionId}/feedback`, { method: "POST" }).catch(() => null),
+      ]);
+      setResults(resultsData);
+      setFeedback(feedbackData);
+      await apiFetch("/history", {
+        method: "POST",
+        body: JSON.stringify({ session_id: sessionId }),
+      }).catch(() => null);
+      setView("results");
+      loadReports();
     } catch (err) {
-      setErrorMsg(err.message || "An error occurred fetching results.");
+      setErrorMsg(err.message || "Failed to load results.");
     }
   };
 
-  const handleRestart = () => {
-    setScreen("setup");
+  const handleNewTest = () => {
     setSessionId("");
-    setCurrentQuestion("");
-    setQuestionNumber(1);
-    setAnswerText("");
+    setQuestions([]);
+    setQuestionIndex(0);
+    setSelectedAnswer("");
     setResults(null);
+    setFeedback(null);
     setErrorMsg("");
+    setView("new-test");
   };
 
+  const handleLogout = () => {
+    clearAuth();
+    setUser(null);
+    setView("home");
+  };
+
+  const openHistoryDetail = async (id) => {
+    try {
+      const data = await apiFetch(`/history/${id}`);
+      setSelectedHistory(data);
+      setView("history-detail");
+    } catch (err) {
+      setErrorMsg(err.message);
+    }
+  };
+
+  if (!user) {
+    return <AuthForm onSuccess={setUser} />;
+  }
+
+  const currentQuestion = questions[questionIndex];
+  const sidebarView = ["assessment", "results", "history-detail"].includes(view) ? "new-test" : view;
+
   return (
-    <GridBackground>
-      {/* Top Header */}
-      <header className="w-full max-w-6xl mx-auto px-6 py-6 flex items-center justify-between border-b border-white/5 relative z-10">
-        <div className="flex items-center gap-2.5 cursor-pointer" onClick={handleRestart}>
-          <div className="p-2 bg-indigo-500/10 rounded-xl border border-indigo-500/20 text-indigo-400">
-            <Brain className="w-6 h-6 animate-pulse-slow" />
-          </div>
-          <div>
-            <h1 className="font-bold text-lg tracking-tight bg-gradient-to-r from-zinc-100 to-zinc-400 bg-clip-text text-transparent">
-              InterviewerAI
-            </h1>
-            <p className="text-[10px] text-zinc-500 font-mono tracking-wider uppercase font-semibold">
-              MVP Phase 1
-            </p>
-          </div>
-        </div>
-        
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-emerald-500 animate-ping"></span>
-          <span className="text-xs font-mono text-zinc-400">System Ready</span>
-        </div>
-      </header>
+    <>
+      <DashboardLayout
+        user={user}
+        activeView={sidebarView}
+        onNavigate={(id) => {
+          setErrorMsg("");
+          if (id === "new-test") handleNewTest();
+          else setView(id);
+        }}
+        onLogout={handleLogout}
+      >
+        {errorMsg && <ErrorAlert message={errorMsg} onDismiss={() => setErrorMsg("")} />}
 
-      {/* Main Container */}
-      <main className="w-full max-w-4xl mx-auto px-6 py-12 flex-1 flex flex-col justify-center relative z-10">
-        
-        {/* Error Alert */}
-        {errorMsg && (
-          <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-start gap-3 text-red-400 animate-in fade-in slide-in-from-top-2">
-            <AlertCircle className="w-5 h-5 shrink-0 mt-0.5" />
-            <div>
-              <h4 className="font-semibold text-sm">Action Failed</h4>
-              <p className="text-xs opacity-90 mt-0.5">{errorMsg}</p>
-            </div>
-          </div>
-        )}
-
-        {/* SCREEN 1: SETUP */}
-        {screen === "setup" && (
-          <div className="max-w-xl mx-auto w-full space-y-8 animate-in fade-in duration-500">
-            <div className="text-center space-y-3">
-              <h2 className="text-3xl font-extrabold tracking-tight bg-gradient-to-b from-zinc-100 to-zinc-400 bg-clip-text text-transparent">
-                Configure Your Session
-              </h2>
-              <p className="text-zinc-400 text-sm max-w-sm mx-auto">
-                Set your path, test your skills, and receive instant generative grading and feedback.
-              </p>
-            </div>
-
+        {view === "home" && (
+          <div className="space-y-6 max-w-3xl">
             <GlowingCard>
-              <div className="space-y-6">
-                {/* Subject Dropdown */}
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-zinc-400 font-mono flex items-center gap-2">
-                    <BookOpen className="w-3.5 h-3.5" /> Subject
-                  </label>
-                  <select
-                    value={subject}
-                    onChange={(e) => setSubject(e.target.value)}
-                    className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-3 text-zinc-100 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition"
-                  >
-                    {Object.keys(SUBJECTS_TOPICS).map((sub) => (
-                      <option key={sub} value={sub}>{sub}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Topic Dropdown */}
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-zinc-400 font-mono flex items-center gap-2">
-                    <HelpCircle className="w-3.5 h-3.5" /> Topic
-                  </label>
-                  <select
-                    value={topic}
-                    onChange={(e) => setTopic(e.target.value)}
-                    className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-3 text-zinc-100 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition"
-                  >
-                    {SUBJECTS_TOPICS[subject]?.map((t) => (
-                      <option key={t} value={t}>{t}</option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Difficulty Dropdown */}
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-zinc-400 font-mono flex items-center gap-2">
-                    <Award className="w-3.5 h-3.5" /> Difficulty
-                  </label>
-                  <select
-                    value={difficulty}
-                    onChange={(e) => setDifficulty(e.target.value)}
-                    className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-3 text-zinc-100 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition"
-                  >
-                    <option value="Easy">Easy (Lenient Grading)</option>
-                    <option value="Medium">Medium (Balanced Grading)</option>
-                    <option value="Hard">Hard (Strict Grading)</option>
-                  </select>
-                </div>
-
-                {/* Start Button */}
-                <div className="pt-2">
-                  <HoverBorderGradient 
-                    onClick={handleStartInterview} 
-                    containerClassName="w-full"
-                    disabled={loading}
-                  >
-                    <span className="flex items-center justify-center gap-2">
-                      <Play className="w-4 h-4 fill-current" /> Start Interview Session
-                    </span>
-                  </HoverBorderGradient>
-                </div>
-              </div>
+              <h3 className="text-xl font-bold text-zinc-100 mb-1">Welcome back, {user.name}!</h3>
+              <p className="text-sm text-zinc-400">Ready for your next AI-powered assessment?</p>
             </GlowingCard>
+            <div className="grid sm:grid-cols-3 gap-4">
+              <StatCard label="Total Tests" value={reports?.total_tests ?? 0} />
+              <StatCard label="Average Score" value={`${reports?.average_score ?? 0}%`} />
+              <StatCard label="Best Score" value={`${reports?.best_score ?? 0}%`} />
+            </div>
+            <HoverBorderGradient onClick={() => setView("new-test")} containerClassName="w-full sm:w-auto">
+              <span className="flex items-center gap-2"><Play className="w-4 h-4 fill-current" /> Start New Test</span>
+            </HoverBorderGradient>
           </div>
         )}
 
-        {/* SCREEN 2: INTERVIEW */}
-        {screen === "interview" && (
-          <div className="max-w-2xl mx-auto w-full space-y-6 animate-in fade-in duration-300">
-            {/* Header info */}
-            <div className="flex flex-wrap items-center justify-between gap-4 bg-zinc-900/40 px-5 py-3 rounded-2xl border border-white/5">
-              <div className="flex items-center gap-1.5 text-xs text-zinc-400 font-medium">
-                <span>{subject}</span>
-                <ChevronRight className="w-3.5 h-3.5 text-zinc-600" />
-                <span>{topic}</span>
-                <ChevronRight className="w-3.5 h-3.5 text-zinc-600" />
-                <span className="text-indigo-400 font-semibold">{difficulty}</span>
-              </div>
-              <span className="text-xs font-mono font-bold bg-zinc-800 text-zinc-300 px-3 py-1 rounded-full border border-white/5">
-                Question {questionNumber} of {totalQuestions}
-              </span>
-            </div>
-
-            {/* Progress Bar */}
-            <div className="w-full bg-zinc-900 h-1.5 rounded-full overflow-hidden border border-white/5">
-              <div 
-                className="bg-gradient-to-r from-indigo-500 to-purple-500 h-full transition-all duration-500" 
-                style={{ width: `${(questionNumber / totalQuestions) * 100}%` }}
-              />
-            </div>
-
-            {/* Question Card */}
+        {view === "new-test" && (
+          <div className="max-w-xl space-y-6">
             <GlowingCard>
-              <div className="space-y-6">
+              <div className="space-y-5">
+                <SelectField label="Skill Category" icon={<BookOpen className="w-3.5 h-3.5" />} value={skillCategory} onChange={setSkillCategory}>
+                  {Object.keys(SUBJECTS_TOPICS).map((s) => <option key={s} value={s}>{s}</option>)}
+                </SelectField>
+                <SelectField label="Topic" icon={<HelpCircle className="w-3.5 h-3.5" />} value={topic} onChange={setTopic}>
+                  {SUBJECTS_TOPICS[skillCategory]?.map((t) => <option key={t} value={t}>{t}</option>)}
+                </SelectField>
+                <SelectField label="Difficulty" icon={<Award className="w-3.5 h-3.5" />} value={difficulty} onChange={setDifficulty}>
+                  {["Easy", "Medium", "Hard"].map((d) => <option key={d} value={d}>{d}</option>)}
+                </SelectField>
+                <SelectField label="Experience Level" icon={<Award className="w-3.5 h-3.5" />} value={experienceLevel} onChange={setExperienceLevel}>
+                  {["Junior", "Mid", "Senior"].map((l) => <option key={l} value={l}>{l}</option>)}
+                </SelectField>
+                <SelectField label="Assessment Type" icon={<FileText className="w-3.5 h-3.5" />} value={assessmentType} onChange={setAssessmentType}>
+                  {["Knowledge Check", "Interview Prep", "Certification"].map((t) => <option key={t} value={t}>{t}</option>)}
+                </SelectField>
                 <div className="space-y-2">
-                  <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-500 font-mono">
-                    Question Prompt
-                  </h3>
-                  <p className="text-lg font-bold text-zinc-100 leading-relaxed">
-                    {currentQuestion}
-                  </p>
-                </div>
-
-                <div className="space-y-2">
-                  <label className="text-xs font-bold uppercase tracking-wider text-zinc-500 font-mono flex items-center gap-1.5">
-                    <MessageSquare className="w-3.5 h-3.5" /> Your Answer
-                  </label>
+                  <label className="text-xs font-bold uppercase tracking-wider text-zinc-400 font-mono">Learning Objectives (optional)</label>
                   <textarea
-                    rows={6}
-                    value={answerText}
-                    onChange={(e) => setAnswerText(e.target.value)}
-                    placeholder="Type your comprehensive explanation here..."
-                    className="w-full bg-zinc-900/80 border border-white/10 rounded-xl p-4 text-zinc-100 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition placeholder-zinc-600 leading-relaxed resize-none"
+                    value={learningObjectives}
+                    onChange={(e) => setLearningObjectives(e.target.value)}
+                    rows={2}
+                    className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-3 text-zinc-100 text-sm focus:border-indigo-500 focus:outline-none resize-none"
                   />
                 </div>
-
-                <div className="flex justify-end pt-2">
-                  <HoverBorderGradient 
-                    onClick={handleSubmitAnswer}
-                    disabled={!answerText.trim() || loading}
-                    containerClassName="w-full sm:w-auto"
-                  >
-                    <span className="flex items-center justify-center gap-2">
-                      <Send className="w-4 h-4" /> Submit Answer
-                    </span>
-                  </HoverBorderGradient>
-                </div>
+                <HoverBorderGradient onClick={handleStartAssessment} containerClassName="w-full" disabled={loading}>
+                  <span className="flex items-center justify-center gap-2"><Play className="w-4 h-4 fill-current" /> Generate & Start</span>
+                </HoverBorderGradient>
               </div>
             </GlowingCard>
-            
-            {/* Multi Step scoring loader */}
-            <MultiStepLoader loading={loading} />
           </div>
         )}
 
-        {/* SCREEN 3: RESULTS */}
-        {screen === "results" && results && (
-          <div className="w-full space-y-8 animate-in fade-in duration-500">
-            {/* Overall Header card */}
-            <GlowingCard containerClassName="w-full">
-              <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-                <div className="space-y-2">
-                  <div className="flex items-center gap-1.5 text-xs text-zinc-400 font-medium">
-                    <span>{results.subject}</span>
-                    <ChevronRight className="w-3.5 h-3.5 text-zinc-600" />
-                    <span>{results.topic}</span>
-                    <ChevronRight className="w-3.5 h-3.5 text-zinc-600" />
-                    <span className="text-indigo-400 font-semibold">{results.difficulty}</span>
-                  </div>
-                  <h2 className="text-2xl md:text-3xl font-extrabold tracking-tight bg-gradient-to-b from-zinc-100 to-zinc-400 bg-clip-text text-transparent">
-                    Interview Evaluation Report
-                  </h2>
-                  <p className="text-xs text-zinc-500">
-                    Calculated using generative strictness models matching {results.difficulty} difficulty.
-                  </p>
-                </div>
+        {view === "assessment" && currentQuestion && (
+          <AssessmentView
+            skillCategory={skillCategory}
+            topic={topic}
+            difficulty={difficulty}
+            questionIndex={questionIndex}
+            totalQuestions={questions.length}
+            currentQuestion={currentQuestion}
+            selectedAnswer={selectedAnswer}
+            setSelectedAnswer={setSelectedAnswer}
+            loading={loading}
+            onSubmit={handleSubmitAnswer}
+          />
+        )}
 
-                {/* Score Indicator */}
-                <div className="flex items-center gap-4 bg-zinc-900/60 p-4 rounded-2xl border border-white/5 shrink-0">
-                  <div className="p-3 bg-indigo-500/10 rounded-xl text-indigo-400">
-                    <Award className="w-8 h-8" />
-                  </div>
-                  <div>
-                    <p className="text-xs font-mono font-bold text-zinc-500 uppercase tracking-wider">
-                      Overall Score
-                    </p>
-                    <div className="flex items-baseline gap-1">
-                      <span className={`text-3xl font-extrabold font-mono ${results.overall_score >= 7.0 ? 'text-emerald-400' : 'text-amber-400'}`}>
-                        {results.overall_score.toFixed(1)}
-                      </span>
-                      <span className="text-zinc-600 text-sm font-semibold">/ 10.0</span>
+        {view === "results" && results && (
+          <ResultsView results={results} feedback={feedback} onNewTest={handleNewTest} />
+        )}
+
+        {view === "history" && (
+          <div className="space-y-3 max-w-2xl">
+            {history.length === 0 && <p className="text-sm text-zinc-500">No tests yet. Start your first assessment!</p>}
+            {history.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                onClick={() => openHistoryDetail(item.id)}
+                className="w-full text-left"
+              >
+                <GlowingCard containerClassName="w-full hover:border-indigo-500/30 transition-colors cursor-pointer">
+                  <div className="flex justify-between items-center gap-4">
+                    <div>
+                      <p className="text-sm font-bold text-zinc-100">{item.topic} · {item.skill_category}</p>
+                      <p className="text-xs text-zinc-500">{new Date(item.completed_at).toLocaleString()}</p>
                     </div>
+                    <span className="text-lg font-mono font-bold text-indigo-400">{item.accuracy_percent}%</span>
                   </div>
-                </div>
-              </div>
-            </GlowingCard>
-
-            {/* Question breakdown list */}
-            <div className="space-y-4">
-              <h3 className="text-xs font-bold uppercase tracking-wider text-zinc-500 font-mono pl-1">
-                Question Breakdown
-              </h3>
-              
-              {results.questions.map((q, idx) => {
-                const isPassed = q.score >= 7;
-                return (
-                  <GlowingCard key={idx} containerClassName="w-full">
-                    <div className="space-y-4">
-                      {/* Top bar */}
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="space-y-1">
-                          <p className="text-[10px] text-zinc-500 font-mono font-bold uppercase">
-                            Question {idx + 1}
-                          </p>
-                          <h4 className="text-sm font-bold text-zinc-100 leading-snug">
-                            {q.question}
-                          </h4>
-                        </div>
-                        {/* Score Badge */}
-                        <div className={`shrink-0 px-3 py-1.5 rounded-xl border text-xs font-bold font-mono ${
-                          isPassed 
-                            ? "bg-emerald-500/10 border-emerald-500/20 text-emerald-400" 
-                            : "bg-amber-500/10 border-amber-500/20 text-amber-400"
-                        }`}>
-                          Score: {q.score}/10
-                        </div>
-                      </div>
-
-                      {/* User Answer */}
-                      <div className="p-3.5 bg-zinc-900/50 rounded-xl border border-white/5 space-y-1.5">
-                        <h5 className="text-[10px] text-zinc-500 font-mono font-bold uppercase tracking-wider">
-                          Your Answer
-                        </h5>
-                        <p className="text-xs text-zinc-300 leading-relaxed font-mono whitespace-pre-wrap">
-                          {q.answer || "(No response provided)"}
-                        </p>
-                      </div>
-
-                      {/* AI Feedback */}
-                      <div className="p-3.5 bg-zinc-900/30 rounded-xl border border-dashed border-white/5 space-y-1.5">
-                        <h5 className="text-[10px] text-zinc-400 font-mono font-bold uppercase tracking-wider">
-                          AI Evaluator Feedback
-                        </h5>
-                        <p className="text-xs text-zinc-400 leading-relaxed">
-                          {q.feedback}
-                        </p>
-                      </div>
-                    </div>
-                  </GlowingCard>
-                );
-              })}
-            </div>
-
-            {/* Restart button */}
-            <div className="flex justify-center pt-4">
-              <HoverBorderGradient onClick={handleRestart} containerClassName="w-full sm:w-auto">
-                <span className="flex items-center justify-center gap-2">
-                  <RefreshCw className="w-4 h-4" /> Start New Interview Session
-                </span>
-              </HoverBorderGradient>
-            </div>
+                </GlowingCard>
+              </button>
+            ))}
           </div>
         )}
-      </main>
-      
-      {/* Footer */}
-      <footer className="w-full max-w-6xl mx-auto px-6 py-6 text-center border-t border-white/5 mt-auto relative z-10">
-        <p className="text-[11px] text-zinc-600 font-mono tracking-wider uppercase">
-          Build for Scaler AI module • Powered by Anthropic Claude API
-        </p>
-      </footer>
-    </GridBackground>
+
+        {view === "history-detail" && selectedHistory && (
+          <ResultsView
+            results={selectedHistory.results}
+            feedback={selectedHistory.feedback}
+            onNewTest={() => setView("history")}
+            backLabel="Back to History"
+          />
+        )}
+
+        {view === "reports" && (
+          <div className="space-y-6 max-w-2xl">
+            <div className="grid sm:grid-cols-3 gap-4">
+              <StatCard label="Total Tests" value={reports?.total_tests ?? 0} icon={<FileText className="w-4 h-4" />} />
+              <StatCard label="Average Score" value={`${reports?.average_score ?? 0}%`} icon={<TrendingUp className="w-4 h-4" />} />
+              <StatCard label="Best Score" value={`${reports?.best_score ?? 0}%`} icon={<Award className="w-4 h-4" />} />
+            </div>
+            <GlowingCard>
+              <h3 className="text-sm font-bold text-zinc-300 mb-4 uppercase font-mono">Recent Tests</h3>
+              {(reports?.recent_tests ?? []).map((t) => (
+                <div key={t.id} className="flex justify-between py-2 border-b border-white/5 last:border-0">
+                  <span className="text-sm text-zinc-400">{t.topic} · {t.difficulty}</span>
+                  <span className="text-sm font-mono text-indigo-400">{t.accuracy_percent}%</span>
+                </div>
+              ))}
+              {!reports?.recent_tests?.length && <p className="text-xs text-zinc-500">No data yet</p>}
+            </GlowingCard>
+          </div>
+        )}
+      </DashboardLayout>
+
+      <MultiStepLoader loading={loading} />
+    </>
+  );
+}
+
+function AssessmentView({ skillCategory, topic, difficulty, questionIndex, totalQuestions, currentQuestion, selectedAnswer, setSelectedAnswer, loading, onSubmit }) {
+  return (
+    <div className="max-w-2xl space-y-6">
+      <div className="flex flex-wrap items-center justify-between gap-4 bg-zinc-900/40 px-5 py-3 rounded-2xl border border-white/5">
+        <div className="flex items-center gap-1.5 text-xs text-zinc-400">
+          <span>{skillCategory}</span><ChevronRight className="w-3.5 h-3.5 text-zinc-600" />
+          <span>{topic}</span><ChevronRight className="w-3.5 h-3.5 text-zinc-600" />
+          <span className="text-indigo-400 font-semibold">{difficulty}</span>
+        </div>
+        <span className="text-xs font-mono font-bold bg-zinc-800 text-zinc-300 px-3 py-1 rounded-full border border-white/5">
+          {questionIndex + 1} / {totalQuestions}
+        </span>
+      </div>
+      <div className="w-full bg-zinc-900 h-1.5 rounded-full overflow-hidden border border-white/5">
+        <div className="bg-gradient-to-r from-indigo-500 to-purple-500 h-full transition-all duration-500" style={{ width: `${((questionIndex + 1) / totalQuestions) * 100}%` }} />
+      </div>
+      <GlowingCard>
+        <div className="space-y-6">
+          <p className="text-lg font-bold text-zinc-100">{currentQuestion.question}</p>
+          <div className="space-y-3">
+            {currentQuestion.options.map((option, idx) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setSelectedAnswer(option)}
+                disabled={loading}
+                className={`w-full flex items-center gap-3 p-4 rounded-xl border text-left transition-colors ${
+                  selectedAnswer === option ? "border-indigo-500/60 bg-indigo-500/10" : "border-white/10 bg-zinc-900/50 hover:border-indigo-500/30"
+                }`}
+              >
+                {selectedAnswer === option ? <CheckCircle2 className="w-5 h-5 text-indigo-400 shrink-0" /> : <Circle className="w-5 h-5 text-zinc-500 shrink-0" />}
+                <span className="text-xs font-mono font-bold text-zinc-500">{String.fromCharCode(65 + idx)}</span>
+                <span className="text-sm text-zinc-100">{option}</span>
+              </button>
+            ))}
+          </div>
+          <div className="flex justify-end">
+            <HoverBorderGradient onClick={onSubmit} disabled={!selectedAnswer.trim() || loading}>
+              <span className="flex items-center gap-2"><Send className="w-4 h-4" /> Submit Answer</span>
+            </HoverBorderGradient>
+          </div>
+        </div>
+      </GlowingCard>
+    </div>
+  );
+}
+
+function ResultsView({ results, feedback, onNewTest, backLabel = "Start New Test" }) {
+  return (
+    <div className="space-y-6 max-w-2xl">
+      <GlowingCard containerClassName="w-full">
+        <div className="flex justify-between items-center">
+          <div>
+            <h2 className="text-xl font-bold text-zinc-100">Results</h2>
+            <p className="text-xs text-zinc-500">{results.correct_count}/{results.total_questions} correct</p>
+          </div>
+          <span className="text-3xl font-mono font-bold text-indigo-400">{results.accuracy_percent}%</span>
+        </div>
+      </GlowingCard>
+      {feedback && (
+        <GlowingCard>
+          <h3 className="text-xs font-bold uppercase text-indigo-400 font-mono mb-2">AI Feedback</h3>
+          <p className="text-sm text-zinc-300">{feedback.summary}</p>
+        </GlowingCard>
+      )}
+      {results.questions?.map((q, idx) => (
+        <GlowingCard key={q.question_id || idx} containerClassName="w-full">
+          <div className="space-y-2">
+            <div className="flex justify-between gap-2">
+              <h4 className="text-sm font-bold text-zinc-100">Q{idx + 1}: {q.question}</h4>
+              <span className={`text-xs px-2 py-0.5 rounded ${q.correct ? "text-emerald-400 bg-emerald-500/10" : "text-red-400 bg-red-500/10"}`}>
+                {q.correct ? "Correct" : "Wrong"}
+              </span>
+            </div>
+            <p className="text-xs text-zinc-500">{q.explanation}</p>
+          </div>
+        </GlowingCard>
+      ))}
+      <HoverBorderGradient onClick={onNewTest}>
+        <span className="flex items-center gap-2"><RefreshCw className="w-4 h-4" /> {backLabel}</span>
+      </HoverBorderGradient>
+    </div>
+  );
+}
+
+function StatCard({ label, value, icon }) {
+  return (
+    <GlowingCard>
+      <div className="flex items-center gap-3">
+        {icon && <span className="text-indigo-400">{icon}</span>}
+        <div>
+          <p className="text-[10px] uppercase font-mono text-zinc-500">{label}</p>
+          <p className="text-2xl font-bold text-zinc-100">{value}</p>
+        </div>
+      </div>
+    </GlowingCard>
+  );
+}
+
+function ErrorAlert({ message, onDismiss }) {
+  return (
+    <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl flex items-start gap-3 text-red-400">
+      <AlertCircle className="w-5 h-5 shrink-0" />
+      <p className="text-xs flex-1">{message}</p>
+      <button type="button" onClick={onDismiss} className="text-xs opacity-70">Dismiss</button>
+    </div>
+  );
+}
+
+function SelectField({ label, icon, value, onChange, children }) {
+  return (
+    <div className="space-y-2">
+      <label className="text-xs font-bold uppercase tracking-wider text-zinc-400 font-mono flex items-center gap-2">{icon} {label}</label>
+      <select value={value} onChange={(e) => onChange(e.target.value)} className="w-full bg-zinc-900 border border-white/10 rounded-xl px-4 py-3 text-zinc-100 text-sm focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500">
+        {children}
+      </select>
+    </div>
   );
 }

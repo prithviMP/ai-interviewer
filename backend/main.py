@@ -1,240 +1,186 @@
-import uuid
-from typing import List, Optional
-from fastapi import FastAPI, HTTPException
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 
-app = FastAPI(title="AI Interview Taker MVP API")
+from config import get_settings
+from database import init_db
+from dependencies import get_current_user
+from models.assessment import (
+    AssessmentConfig,
+    AssessmentResultsResponse,
+    FeedbackResponse,
+    GenerateAssessmentRequest,
+    GenerateAssessmentResponse,
+    HealthResponse,
+    StartAssessmentRequest,
+    StartAssessmentResponse,
+    SubmitAnswerRequest,
+    SubmitAnswerResponse,
+)
+from models.auth import (
+    AuthResponse,
+    HistoryDetail,
+    HistorySummary,
+    LoginRequest,
+    ReportsSummary,
+    SaveHistoryRequest,
+    SignUpRequest,
+    UserResponse,
+)
+from services.assessment_service import AssessmentService
+from services.auth_service import AuthService
+from services.cache_service import CacheService
+from services.gemini_service import GeminiService
+from services.history_service import HistoryService
+from services.mcq_evaluator import MCQEvaluator
+from services.question_generator import QuestionGenerator
 
-# Enable CORS for frontend local development
+settings = get_settings()
+cache_service = CacheService(ttl_seconds=settings.cache_ttl_seconds)
+gemini_service = GeminiService()
+question_generator = QuestionGenerator(gemini_service, cache_service)
+assessment_service = AssessmentService(question_generator, MCQEvaluator(), gemini_service)
+auth_service = AuthService()
+history_service = HistoryService(assessment_service)
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    init_db()
+    yield
+
+
+app = FastAPI(title="AI Assessment Platform API", lifespan=lifespan)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # For dev simplicity; can be narrowed to ["http://localhost:5173", "http://127.0.0.1:5173"]
+    allow_origins=settings.cors_origins.split(",") if settings.cors_origins != "*" else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# In-memory session store
-# Schema:
-# {
-#   session_id: {
-#     "subject": str,
-#     "topic": str,
-#     "difficulty": str,
-#     "current_index": int,  # 0-based index (0 to 4)
-#     "questions": List[str],  # 5 questions total
-#     "qa_log": [
-#        { "question": str, "answer": str, "score": int, "feedback": str }
-#     ]
-#   }
-# }
-sessions = {}
 
-# Mock questions for different combinations
-MOCK_QUESTIONS_POOL = {
-    ("Frontend", "React"): [
-        "What is the purpose of state in React, and how does it differ from props?",
-        "What are React Hooks, and what rules must you follow when using them?",
-        "Explain the Virtual DOM and how React reconciles updates to the real DOM.",
-        "How does the useEffect hook work, and how do you clean up side effects in it?",
-        "What is the difference between controlled and uncontrolled components in React?"
-    ],
-    ("Frontend", "JavaScript"): [
-        "What is the difference between 'let', 'const', and 'var' in JavaScript?",
-        "Explain the concept of closures in JavaScript and provide a practical use case.",
-        "What is the difference between '==' and '===' operators in JavaScript?",
-        "Explain how the JavaScript Event Loop works and how it handles asynchronous operations.",
-        "What are Promises, and how do they compare to async/await syntax?"
-    ],
-    ("Frontend", "CSS"): [
-        "What is the difference between Flexbox and CSS Grid layout systems?",
-        "Explain the CSS Box Model and how 'box-sizing: border-box' affects it.",
-        "What are CSS custom properties (variables) and how do they differ from preprocessor variables?",
-        "Explain CSS specificity and how the cascade determines styling application rules.",
-        "What is the purpose of media queries and how do you implement mobile-first design?"
-    ],
-    ("Backend", "Node.js"): [
-        "Explain the single-threaded event loop architecture of Node.js.",
-        "What is the difference between 'require' (CommonJS) and 'import' (ES Modules) in Node.js?",
-        "How does middleware work in Express, and what is its role in request processing?",
-        "What is the difference between stream-based and buffer-based file processing in Node.js?",
-        "Explain how error handling is typically implemented in asynchronous Node.js operations."
-    ],
-    ("Backend", "Databases"): [
-        "What is the difference between SQL and NoSQL databases, and when would you use each?",
-        "Explain the ACID properties of relational database transactions.",
-        "What is database indexing, and how does it improve query performance? Are there downsides?",
-        "Explain the difference between inner join, left join, and outer join in SQL.",
-        "What is database normalization, and why is it important in relational database design?"
-    ]
-}
-
-DEFAULT_MOCK_QUESTIONS = [
-    "What is the primary technical concept behind this topic, and why is it important?",
-    "Explain a common problem or challenge associated with this topic and how you would solve it.",
-    "Describe the difference between two competing approaches or features in this area.",
-    "How do you optimize or write efficient code/systems related to this topic?",
-    "Explain how you would debug or troubleshoot an issue related to this topic."
-]
-
-# Request/Response Pydantic Models
-class StartInterviewRequest(BaseModel):
-    subject: str
-    topic: str
-    difficulty: str
-
-class StartInterviewResponse(BaseModel):
-    session_id: str
-    question: str
-    question_number: int
-    total_questions: int
-
-class SubmitAnswerRequest(BaseModel):
-    session_id: str
-    answer: str
-
-class SubmitAnswerResponse(BaseModel):
-    score: int
-    feedback: str
-    done: bool
-    next_question: Optional[str] = None
-    question_number: int
-    total_questions: int
-
-class QuestionDetail(BaseModel):
-    question: str
-    answer: str
-    score: int
-    feedback: str
-
-class ResultsResponse(BaseModel):
-    subject: str
-    topic: str
-    difficulty: str
-    overall_score: float
-    questions: List[QuestionDetail]
+@app.get("/health", response_model=HealthResponse)
+def health() -> HealthResponse:
+    return HealthResponse(status="ok", gemini_configured=gemini_service.is_configured)
 
 
-@app.post("/start-interview", response_model=StartInterviewResponse)
-def start_interview(payload: StartInterviewRequest):
-    session_id = str(uuid.uuid4())
-    
-    # Retrieve mock questions based on subject & topic
-    key = (payload.subject, payload.topic)
-    questions = MOCK_QUESTIONS_POOL.get(key, DEFAULT_MOCK_QUESTIONS).copy()
-    
-    # Adjust questions lightly based on difficulty for visual representation
-    difficulty_prefix = f"[{payload.difficulty} level] "
-    questions = [difficulty_prefix + q for q in questions]
-    
-    sessions[session_id] = {
-        "subject": payload.subject,
-        "topic": payload.topic,
-        "difficulty": payload.difficulty,
-        "current_index": 0,
-        "questions": questions,
-        "qa_log": []
-    }
-    
-    return StartInterviewResponse(
-        session_id=session_id,
-        question=questions[0],
+# --- Auth ---
+
+@app.post("/auth/signup", response_model=AuthResponse)
+def signup(payload: SignUpRequest) -> AuthResponse:
+    return auth_service.signup(payload)
+
+
+@app.post("/auth/login", response_model=AuthResponse)
+def login(payload: LoginRequest) -> AuthResponse:
+    return auth_service.login(payload)
+
+
+@app.get("/auth/me", response_model=UserResponse)
+def me(user: UserResponse = Depends(get_current_user)) -> UserResponse:
+    return user
+
+
+# --- Assessments ---
+
+@app.post("/assessments/generate", response_model=GenerateAssessmentResponse)
+def generate_assessment(
+    payload: GenerateAssessmentRequest,
+    user: UserResponse = Depends(get_current_user),
+) -> GenerateAssessmentResponse:
+    del user
+    config = AssessmentConfig(
+        skill_category=payload.skill_category,
+        topic=payload.topic,
+        difficulty=payload.difficulty,
+        experience_level=payload.experience_level,
+        assessment_type=payload.assessment_type,
+        learning_objectives=payload.learning_objectives,
+        question_count=payload.question_count,
+    )
+    return assessment_service.generate_assessment(
+        config, skip_cache=payload.skip_cache, cache_key=payload.cache_key
+    )
+
+
+@app.post("/assessments/start", response_model=StartAssessmentResponse)
+def start_assessment(
+    payload: StartAssessmentRequest,
+    user: UserResponse = Depends(get_current_user),
+) -> StartAssessmentResponse:
+    del user
+    if payload.cache_key:
+        return assessment_service.start_from_cache(payload.config, payload.cache_key)
+    result = assessment_service.generate_assessment(payload.config)
+    return StartAssessmentResponse(
+        session_id=result.session_id,
+        cache_key=result.cache_key,
+        question=result.questions[0],
         question_number=1,
-        total_questions=5
+        total_questions=result.total_questions,
     )
 
 
-@app.post("/submit-answer", response_model=SubmitAnswerResponse)
-def submit_answer(payload: SubmitAnswerRequest):
-    session_id = payload.session_id
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-        
-    session = sessions[session_id]
-    current_index = session["current_index"]
-    questions = session["questions"]
-    
-    if current_index >= 5:
-        raise HTTPException(status_code=400, detail="Interview is already completed")
-        
-    current_question = questions[current_index]
-    
-    # Mock scoring logic (score between 5 and 10 for demonstration)
-    # Give higher scores if the answer is longer to simulate "scoring strictness"
-    answer_len = len(payload.answer.strip())
-    if answer_len == 0:
-        score = 0
-        feedback = "You did not provide an answer. Please attempt the question next time to receive credit."
-    elif answer_len < 15:
-        score = 4
-        feedback = f"Your answer is too short. At the {session['difficulty']} difficulty level, we expect a more detailed explanation of the concepts."
-    else:
-        # Pseudo-random but deterministic score
-        score = 6 + (answer_len % 5)
-        # Ensure max score of 10
-        score = min(score, 10)
-        feedback = (
-            f"Good effort. Your response correctly identifies some core aspects. "
-            f"Under {session['difficulty']} criteria, you could improve by elaborating on edge cases and deep-dive mechanics."
-        )
-        
-    # Log the response
-    session["qa_log"].append({
-        "question": current_question,
-        "answer": payload.answer,
-        "score": score,
-        "feedback": feedback
-    })
-    
-    # Advance to next question
-    session["current_index"] += 1
-    next_index = session["current_index"]
-    done = next_index >= 5
-    
-    next_question = None
-    if not done:
-        next_question = questions[next_index]
-        
-    return SubmitAnswerResponse(
-        score=score,
-        feedback=feedback,
-        done=done,
-        next_question=next_question,
-        question_number=next_index + 1 if not done else 5,
-        total_questions=5
-    )
+@app.post("/assessments/{session_id}/answer", response_model=SubmitAnswerResponse)
+def submit_answer(
+    session_id: str,
+    payload: SubmitAnswerRequest,
+    user: UserResponse = Depends(get_current_user),
+) -> SubmitAnswerResponse:
+    del user
+    return assessment_service.submit_answer(session_id, payload.selected_answer, payload.time_ms)
 
 
-@app.get("/results/{session_id}", response_model=ResultsResponse)
-def get_results(session_id: str):
-    if session_id not in sessions:
-        raise HTTPException(status_code=404, detail="Session not found")
-        
-    session = sessions[session_id]
-    qa_log = session["qa_log"]
-    
-    if len(qa_log) == 0:
-        overall_score = 0.0
-    else:
-        overall_score = round(sum(q["score"] for q in qa_log) / len(qa_log), 1)
-        
-    return ResultsResponse(
-        subject=session["subject"],
-        topic=session["topic"],
-        difficulty=session["difficulty"],
-        overall_score=overall_score,
-        questions=[
-            QuestionDetail(
-                question=q["question"],
-                answer=q["answer"],
-                score=q["score"],
-                feedback=q["feedback"]
-            )
-            for q in qa_log
-        ]
-    )
+@app.get("/assessments/{session_id}/results", response_model=AssessmentResultsResponse)
+def get_results(
+    session_id: str,
+    user: UserResponse = Depends(get_current_user),
+) -> AssessmentResultsResponse:
+    del user
+    return assessment_service.get_results(session_id)
+
+
+@app.post("/assessments/{session_id}/feedback", response_model=FeedbackResponse)
+def get_feedback(
+    session_id: str,
+    user: UserResponse = Depends(get_current_user),
+) -> FeedbackResponse:
+    del user
+    return assessment_service.generate_feedback(session_id)
+
+
+# --- History & Reports ---
+
+@app.post("/history", response_model=HistorySummary)
+def save_history(
+    payload: SaveHistoryRequest,
+    user: UserResponse = Depends(get_current_user),
+) -> HistorySummary:
+    return history_service.save_from_session(user.id, payload.session_id)
+
+
+@app.get("/history", response_model=list[HistorySummary])
+def list_history(user: UserResponse = Depends(get_current_user)) -> list[HistorySummary]:
+    return history_service.list_for_user(user.id)
+
+
+@app.get("/history/{history_id}", response_model=HistoryDetail)
+def get_history_detail(
+    history_id: str,
+    user: UserResponse = Depends(get_current_user),
+) -> HistoryDetail:
+    return history_service.get_detail(user.id, history_id)
+
+
+@app.get("/reports", response_model=ReportsSummary)
+def get_reports(user: UserResponse = Depends(get_current_user)) -> ReportsSummary:
+    return history_service.get_reports(user.id)
+
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="127.0.0.1", port=8000)

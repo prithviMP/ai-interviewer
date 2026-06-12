@@ -1,8 +1,8 @@
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
-
-@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap');
 
 :root {
   --background: 240 10% 3.9%;
@@ -13,29 +13,17 @@
 body {
   background-color: #030303;
   color: #fafafa;
-  font-family: 'Plus Jakarta Sans', 'Outfit', sans-serif;
+  font-family: 'Plus Jakarta Sans', sans-serif;
   margin: 0;
   padding: 0;
   min-height: 100vh;
   overflow-x: hidden;
 }
 
-/* Custom scrollbars */
-::-webkit-scrollbar {
-  width: 8px;
-}
-::-webkit-scrollbar-track {
-  background: #09090b;
-}
-::-webkit-scrollbar-thumb {
-  background: #27272a;
-  border-radius: 4px;
-}
-::-webkit-scrollbar-thumb:hover {
-  background: #3f3f46;
-}
+::-webkit-scrollbar { width: 8px; }
+::-webkit-scrollbar-track { background: #09090b; }
+::-webkit-scrollbar-thumb { background: #27272a; border-radius: 4px; }
 
-/* Glassmorphism custom helpers */
 .glass-panel {
   background: rgba(15, 15, 20, 0.7);
   backdrop-filter: blur(12px);

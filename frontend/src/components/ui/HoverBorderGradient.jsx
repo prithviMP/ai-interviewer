@@ -29,7 +29,7 @@ export function HoverBorderGradient({
       <div
         className={cn(
           "w-full text-zinc-100 z-10 px-6 py-3 rounded-[11px] font-medium transition-colors duration-300",
-          disabled ? "bg-zinc-900/40 text-zinc-500" : "bg-zinc-950/90 group-hover:bg-zinc-950/40",
+          disabled ? "bg-zinc-900/40 text-zinc-500" : "bg-zinc-950/90",
           className
         )}
       >
@@ -39,22 +39,9 @@ export function HoverBorderGradient({
         <motion.div
           className="absolute inset-0 z-0 bg-[conic-gradient(from_0deg,transparent_40%,#6366f1_70%,#a855f7_90%,transparent_100%)]"
           initial={{ rotate: 0 }}
-          animate={
-            hovered
-              ? { rotate: clockwise ? 360 : -360 }
-              : { rotate: 0 }
-          }
-          transition={{
-            duration: duration,
-            repeat: Infinity,
-            ease: "linear",
-          }}
-          style={{
-            width: "300%",
-            height: "300%",
-            left: "-100%",
-            top: "-100%",
-          }}
+          animate={hovered ? { rotate: clockwise ? 360 : -360 } : { rotate: 0 }}
+          transition={{ duration, repeat: Infinity, ease: "linear" }}
+          style={{ width: "300%", height: "300%", left: "-100%", top: "-100%" }}
         />
       )}
     </Component>
